@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import typing
 import warnings
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from importlib import import_module
 
 import rapids_dependency_file_generator
 import tomlkit
+from packaging.version import InvalidVersion, Version
 
 from . import utils
 from .config import Config
@@ -152,7 +154,14 @@ def _write_git_commits(config, project_name: str):
     """
     commit_files = config.commit_files
     if commit_files is None:
-        commit_files = [os.path.join(project_name.replace("-", "_"), "GIT_COMMIT")]
+        default_commit_file = os.path.join(project_name.replace("-", "_"), "GIT_COMMIT")
+        # Projects that aren't laid out as a Python package named after the project
+        # (e.g. a Rust extension built with maturin) have nowhere to put the default
+        # file, so don't write one. Explicitly configured paths are never skipped.
+        if os.path.isdir(os.path.dirname(default_commit_file)):
+            commit_files = [default_commit_file]
+        else:
+            commit_files = []
     commit = _get_git_commit() if commit_files else None
 
     if commit is not None:
@@ -186,17 +195,46 @@ def _write_git_commits(config, project_name: str):
         yield
 
 
+def _read_version_file(version_file: str) -> str:
+    """Read and validate the version in ``version_file``.
+
+    Only the first line is used, and surrounding whitespace is ignored, because files
+    like the ones written by ``rapids-generate-version`` have no trailing newline.
+    """
+    try:
+        with open(version_file) as f:
+            version = f.readline().strip()
+    except FileNotFoundError:
+        raise ValueError(
+            f"File not found: '{version_file}'. The 'version-file' setting must point "
+            "to an existing file when 'version' is listed in project.dynamic."
+        ) from None
+    if not version:
+        raise ValueError(f"Version file '{version_file}' is empty.")
+    try:
+        Version(version)
+    except InvalidVersion:
+        raise ValueError(
+            f"Version file '{version_file}' does not contain a valid PEP 440 version: "
+            f"{version!r}"
+        ) from None
+    return version
+
+
 @contextmanager
 def _edit_pyproject(config):
     """
-    Temporarily modify the name and dependencies of the package being built.
+    Temporarily modify the name, version and dependencies of the package being built.
 
     This is used to allow the backend to modify the name of the package
     being built. This is useful for projects that want to build wheels
     with a different name than the package name.
     """
     pyproject_file = "pyproject.toml"
-    bkp_pyproject_file = ".pyproject.toml.rapids-build-backend.bak"
+    # Keep the backup outside of the source tree, so that backends that package
+    # everything in the project directory (e.g. maturin's sdists) don't pick it up.
+    bkp_dir = tempfile.mkdtemp(prefix="rapids-build-backend-")
+    bkp_pyproject_file = os.path.join(bkp_dir, "pyproject.toml.bak")
 
     if not config.disable_cuda:
         cuda_version_major, cuda_version_minor = _get_cuda_version()
@@ -246,16 +284,26 @@ def _edit_pyproject(config):
                     prepend_channels=[],
                     to_stdout=False,
                 )
-        if not config.disable_cuda:
+        if not config.disable_cuda or config.version_file:
             pyproject = utils._get_pyproject()
             project_data = pyproject["project"]
-            project_data["name"] += _get_cuda_suffix()
+            if not config.disable_cuda:
+                project_data["name"] += _get_cuda_suffix()
+            # If "version" isn't dynamic, there's nothing to fill in. That's the case
+            # when building from an sdist, whose pyproject.toml was already rewritten.
+            dynamic = project_data.get("dynamic", [])
+            if config.version_file and "version" in dynamic:
+                project_data["version"] = _read_version_file(config.version_file)
+                dynamic.remove("version")
+                if not dynamic:
+                    del project_data["dynamic"]
             with open(pyproject_file, "w") as f:
                 tomlkit.dump(pyproject, f)
         yield
     finally:
         # Restore by moving rather than writing to avoid any formatting changes.
         shutil.move(bkp_pyproject_file, pyproject_file)
+        shutil.rmtree(bkp_dir, ignore_errors=True)
 
 
 def _check_setup_py(setup_py_contents: str) -> None:

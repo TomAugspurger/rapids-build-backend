@@ -15,6 +15,7 @@ from rapids_build_backend.impls import (
     _get_arch,
     _get_cuda_suffix,
     _parse_matrix,
+    _read_version_file,
     _remove_rapidsai_from_config,
     _write_git_commits,
 )
@@ -79,6 +80,15 @@ def test_remove_rapidsai_from_config():
             [],
             None,
             [],
+            [],
+            None,
+        ),
+        (
+            # the default location doesn't exist, so nothing is written
+            "test-project",
+            [],
+            None,
+            None,
             [],
             None,
         ),
@@ -316,6 +326,7 @@ def test_edit_pyproject(
             disable_cuda=disable_cuda,
             dependencies_file=dependencies_file,
             matrix_entry=matrix,
+            version_file=None,
         )
 
         with (
@@ -357,8 +368,10 @@ def test_edit_pyproject(
                             """`rapids-dependency-file-generator`.
                             """
                         )
-                    with open(".pyproject.toml.rapids-build-backend.bak") as f:
-                        assert f.read() == original_contents
+                    # the backup must not be left in the source tree
+                    assert not os.path.exists(
+                        ".pyproject.toml.rapids-build-backend.bak"
+                    )
             else:
                 with pytest.warns(
                     UserWarning,
@@ -379,8 +392,9 @@ def test_edit_pyproject(
                                 requires = []
                                 """
                             )
-                        with open(".pyproject.toml.rapids-build-backend.bak") as f:
-                            assert f.read() == original_contents
+                        assert not os.path.exists(
+                            ".pyproject.toml.rapids-build-backend.bak"
+                        )
 
         with open("pyproject.toml") as f:
             assert f.read() == original_contents
@@ -470,3 +484,79 @@ def test_parse_matrix_valid(matrix_input, expected):
 @pytest.mark.parametrize("matrix_input", ["", None])
 def test_parse_matrix_empty(matrix_input):
     assert _parse_matrix(matrix_input) is None
+
+
+@pytest.mark.parametrize(
+    "contents, expected",
+    [
+        ("26.12.00", "26.12.00"),
+        ("26.12.00a397", "26.12.00a397"),
+        ("26.12.00rc0\n", "26.12.00rc0"),
+        ("26.12.00a397.post240101120000", "26.12.00a397.post240101120000"),
+        ("26.12\n# ignored\n", "26.12"),
+    ],
+)
+def test_read_version_file(tmp_path, contents, expected):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text(contents)
+    assert _read_version_file(str(version_file)) == expected
+
+
+@pytest.mark.parametrize(
+    "contents, match",
+    [
+        (None, "File not found"),
+        ("", "is empty"),
+        ("\n", "is empty"),
+        ("not-a-version\n", "valid PEP 440 version"),
+    ],
+)
+def test_read_version_file_errors(tmp_path, contents, match):
+    version_file = tmp_path / "VERSION"
+    if contents is not None:
+        version_file.write_text(contents)
+    with pytest.raises(ValueError, match=match):
+        _read_version_file(str(version_file))
+
+
+@pytest.mark.parametrize(
+    "dynamic, expected_edited",
+    [
+        (
+            '["version"]',
+            '[project]\nname = "test-project"\nversion = "26.12.00a397"\n',
+        ),
+        (
+            '["version", "readme"]',
+            '[project]\nname = "test-project"\ndynamic = ["readme"]\n'
+            'version = "26.12.00a397"\n',
+        ),
+        # already static (e.g. building from an sdist): left alone, file not needed
+        (None, None),
+    ],
+)
+def test_edit_pyproject_version_file(tmp_path, dynamic, expected_edited):
+    dynamic_line = f"dynamic = {dynamic}\n" if dynamic else 'version = "1.0.0"\n'
+    original = f'[project]\nname = "test-project"\n{dynamic_line}'
+    config = Mock(
+        disable_cuda=True,
+        dependencies_file="dependencies.yaml",
+        matrix_entry="",
+        version_file="VERSION",
+    )
+    with set_cwd(tmp_path):
+        with open("pyproject.toml", "w") as f:
+            f.write(original)
+        # only write the version file if the version is supposed to be read from it
+        if dynamic:
+            with open("VERSION", "w") as f:
+                f.write("26.12.00a397")
+
+        with pytest.warns(UserWarning, match="File not found"):
+            with _edit_pyproject(config):
+                with open("pyproject.toml") as f:
+                    edited = f.read()
+        assert edited == (expected_edited or original)
+
+        with open("pyproject.toml") as f:
+            assert f.read() == original

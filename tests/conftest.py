@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -144,6 +144,33 @@ class VEnv:
                     package_dir,
                     *args,
                 ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print("Subprocess failed with output:")
+            print(e.stdout.decode("utf-8"))
+            raise
+
+    def sdist(self, package_dir, outdir):
+        """Build an sdist of ``package_dir`` into ``outdir`` using ``build``."""
+        env = os.environ | {
+            "PIP_FIND_LINKS": str(self.wheelhouse),
+            "PIP_CACHE_DIR": str(self.cache_dir),
+            "PIP_EXTRA_INDEX_URL": "https://pypi.anaconda.org/rapidsai-wheels-nightly/simple",
+        }
+        try:
+            subprocess.run(
+                [self.executable, "-m", "pip", "install", "build"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+            return subprocess.run(
+                [self.executable, "-m", "build", "--sdist", "--outdir", outdir],
+                cwd=package_dir,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=True,

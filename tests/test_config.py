@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -32,6 +32,8 @@ def setup_config_project(tmp_path, flag, config_value):
         ("disable-cuda", "true", True),
         ("disable-cuda", "false", False),
         ("disable-cuda", None, False),
+        ("version-file", '"../VERSION"', "../VERSION"),
+        ("version-file", None, None),
     ],
 )
 def test_config(tmp_path, flag, config_value, expected):

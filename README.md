@@ -10,11 +10,13 @@ It is responsible for the following:
   - *by running [`rapids-dependency-file-generator`](https://github.com/rapidsai/dependency-file-generator)*
 - Modifying the package name to include a CUDA suffix (e.g. `"rmm" -> "rmm-cu12"`)
 - Updating the git commit embedded in the importable package.
+- Filling in the package version from a `VERSION` file.
 
 ## Supported builders
 
 The project is known to support the following builders:
 
+* `maturin`
 * `scikit-build-core`
 * `setuptools`
 
@@ -27,11 +29,12 @@ Any option without a default is required.
 | Option                | Definition                                                                                       | Type           | Default                       | Supports dynamic modification |
 |-----------------------|--------------------------------------------------------------------------------------------------|----------------|-------------------------------|-------------------------------|
 | `build-backend`       | The wrapped build backend (e.g. `setuptools.build_meta`)                                         | string         |                               | N                             |
-| `commit-files`        | List of files in which to write the git commit hash                                              | list[str]      | ["<project_name>/GIT_COMMIT"] | N                             |
+| `commit-files`        | List of files in which to write the git commit hash (the default is skipped if its directory doesn't exist) | list[str]      | ["<project_name>/GIT_COMMIT"] | N                             |
 | `dependencies-file`   | The path to the `dependencies.yaml` file to use                                                  | string         | "dependencies.yaml"           | Y                             |
 | `disable-cuda`        | If true, CUDA version in build environment is ignored when setting package name and dependencies | bool           | false                         | Y                             |
 | `matrix-entry`        | A `;`-separated list of `=`-delimited key/value pairs                                            | string         | ""                            | Y                             |
 | `requires`            | List of build requirements (in addition to `build-system.requires`)                              | list[str]      | []                            | N                             |
+| `version-file`        | File whose first line is used as `project.version` when `version` is listed in `project.dynamic` | string         |                               | Y                             |
 
 This configuration can be provided via the following mechanisms:
 
@@ -62,6 +65,41 @@ requires = [
     "Cython"
 ]
 ```
+
+## `maturin` support
+
+Projects using `maturin` as their build backend are supported:
+
+```toml
+[build-system]
+build-backend = "rapids_build_backend.build"
+requires = [
+    "rapids-build-backend",
+    "maturin>=1.9,<2",
+]
+
+[project]
+name = "my-extension"
+dynamic = ["version"]
+
+[tool.rapids-build-backend]
+build-backend = "maturin"
+disable-cuda = true     # if the package doesn't depend on CUDA
+commit-files = []       # if there's no Python package to write a git commit into
+version-file = "VERSION"
+```
+
+A few things to be aware of:
+
+* `rapids-build-backend` can't install a Rust toolchain. `cargo` must already be available in the build environment.
+* `maturin` doesn't read `--config-settings`. To pass options to it (e.g. `--locked`), use the `MATURIN_PEP517_ARGS` environment variable.
+* `Cargo.toml` only accepts strict semantic versions, which the PEP 440 versions used by RAPIDS (e.g. `26.12.00a397`) are not. When `pyproject.toml` has a static `version` (which `version-file` provides at build time), `maturin` uses it instead of the one in `Cargo.toml`, so `Cargo.toml` can keep a placeholder version.
+
+## Reading the version from a file
+
+If `version-file` is set and `project.dynamic` contains `"version"`, `rapids-build-backend` reads the first line of that file (relative to the project directory), checks that it's a valid PEP 440 version, and uses it as `project.version` for the duration of the build. This works with any wrapped backend and gives backends that can't read a version from a file (like `maturin`) a single source of truth, such as the `VERSION` file written by `rapids-generate-version`.
+
+If `"version"` isn't in `project.dynamic` (for example when building from an sdist, whose `pyproject.toml` already has the version filled in), the option is ignored and the file isn't required.
 
 ## Other build dependencies
 
